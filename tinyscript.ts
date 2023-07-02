@@ -8,6 +8,8 @@ enum TokenType {
     Id,
 
     // keywords
+    And, Or, Not,
+    Def,
     Let,
     Print,
     If, Else,
@@ -18,8 +20,10 @@ enum TokenType {
 
     // punctuations
     LParen, RParen, // ()
+    LCurly, RCurly, // {}
     Semi, // ;
     RightArrow, // =>
+    Comma, // ,
 
     // operators
     Assign,
@@ -50,8 +54,15 @@ class Token {
 }
 
 const keywords = {
+    "and": TokenType.And,
+    "or": TokenType.Or,
+    "not": TokenType.Not,
+    "def": TokenType.Def,
     "let": TokenType.Let,
-    "print": TokenType.Print
+    "print": TokenType.Print,
+    "if": TokenType.If,
+    "else": TokenType.Else,
+    "while": TokenType.While
 };
 
 const tokenize = (input: string) => {
@@ -101,32 +112,77 @@ const tokenize = (input: string) => {
 
         switch (char) {
         case '(':
-            tokens.push(new Token(TokenType.LParen));
             index++;
+            tokens.push(new Token(TokenType.LParen));
             continue;
         case ')':
-            tokens.push(new Token(TokenType.RParen));
             index++;
+            tokens.push(new Token(TokenType.RParen));
+            continue;
+        case '{':
+            index++;
+            tokens.push(new Token(TokenType.LCurly));
+            continue;
+        case '}':
+            index++;
+            tokens.push(new Token(TokenType.RCurly));
             continue;
         case '+':
             tokens.push(new Token(TokenType.Plus));
             index++;
             continue;
         case '-':
-            tokens.push(new Token(TokenType.Minus));
             index++;
+            tokens.push(new Token(TokenType.Minus));
             continue;
         case '*':
-            tokens.push(new Token(TokenType.Mul));
             index++;
+            tokens.push(new Token(TokenType.Mul));
             continue;
         case '/':
-            tokens.push(new Token(TokenType.Div));
             index++;
+            tokens.push(new Token(TokenType.Div));
             continue;
         case ';':
-            tokens.push(new Token(TokenType.Semi));
             index++;
+            tokens.push(new Token(TokenType.Semi));
+            continue;
+        case ',':
+            index++;
+            tokens.push(new Token(TokenType.Comma));
+            continue;
+        case '>':
+            index++;
+            char = input[index];
+            if (char == '=') {
+                index++;
+                tokens.push(new Token(TokenType.GE));
+            } else {
+                tokens.push(new Token(TokenType.GT));
+            }
+            continue;
+        case '<':
+            index++;
+            char = input[index];
+            if (char == '>') {
+                index++;
+                tokens.push(new Token(TokenType.NE));
+            } else if (char == '=') {
+                index++;
+                tokens.push(new Token(TokenType.LE));
+            } else {
+                tokens.push(new Token(TokenType.LT));
+            }
+            continue;
+        case '=':
+            index++;
+            char = input[index];
+            if (char == '=') {
+                index++;
+                tokens.push(new Token(TokenType.EQ));
+            } else {
+                tokens.push(new Token(TokenType.Assign));
+            }
             continue;
         default:
             throw new TSError(`Unknown char '${char}'`);
@@ -138,9 +194,14 @@ const tokenize = (input: string) => {
 
 enum NodeKind {
     Program,
+    DefStatement,
     LetStatement,
     PrintStatement,
+    BlockStatement,
+    IfStatement,
+    WhileStatement,
     BinaryExpression,
+    NameExpression,
     IntLiteral
 }
 
@@ -162,7 +223,19 @@ class Program implements ASTNode {
     }
 }
 
-class LetStatment implements Statement {
+class DefStatement implements Statement {
+    kind: NodeKind.DefStatement;
+    id: string;
+    value: Expression;
+
+    constructor(id: string, value: Expression) {
+        this.kind = NodeKind.DefStatement;
+        this.id = id;
+        this.value = value;
+    }
+}
+
+class LetStatement implements Statement {
     kind: NodeKind.LetStatement;
     id: string;
     value: Expression;
@@ -184,6 +257,42 @@ class PrintStatement implements Statement {
     }
 }
 
+class BlockStatement implements Statement {
+    kind: NodeKind.BlockStatement;
+    body: Statement[];
+
+    constructor(body: Statement[]) {
+        this.kind = NodeKind.BlockStatement;
+        this.body = body;
+    }
+}
+
+class IfStatement implements Statement {
+    kind: NodeKind.IfStatement;
+    condition: Expression;
+    body: Statement;
+    elseBody: Statement;
+
+    constructor(condition: Expression, body: Statement, elseBody: Statement) {
+        this.kind = NodeKind.IfStatement;
+        this.condition = condition;
+        this.body = body;
+        this.elseBody = elseBody;
+    }
+}
+
+class WhileStatement implements Statement {
+    kind: NodeKind.WhileStatement;
+    condition: Expression;
+    body: Statement;
+
+    constructor(condition: Expression, body: Statement) {
+        this.kind = NodeKind.WhileStatement;
+        this.condition = condition;
+        this.body = body;
+    }
+}
+
 class BinaryExpression implements Expression {
     kind: NodeKind.BinaryExpression;
     left: Expression;
@@ -195,6 +304,16 @@ class BinaryExpression implements Expression {
         this.left = left;
         this.operator = operator;
         this.right = right;
+    }
+}
+
+class NameExpression implements Expression {
+    kind: NodeKind.NameExpression;
+    name: string;
+
+    constructor(name: string) {
+        this.kind = NodeKind.NameExpression;
+        this.name = name;
     }
 }
 
@@ -212,7 +331,13 @@ const operators = {
     [TokenType.Plus]: "+",
     [TokenType.Minus]: "-",
     [TokenType.Mul]: "*",
-    [TokenType.Div]: "/"
+    [TokenType.Div]: "/",
+    [TokenType.EQ]: "==",
+    [TokenType.NE]: "<>",
+    [TokenType.GE]: ">=",
+    [TokenType.LE]: "<=",
+    [TokenType.GT]: ">",
+    [TokenType.LT]: "<"
 };
 
 const parse = tokens => {
@@ -242,13 +367,30 @@ const parse = tokens => {
     const parseStatement = () => {
         const token = peek();
         switch (token.type) {
+        case TokenType.Def:
+            return parseDefStatement();
         case TokenType.Let:
             return parseLetStatement();
         case TokenType.Print:
             return parsePrintStatement();
+        case TokenType.LCurly:
+            return parseBlockStatement();
+        case TokenType.If:
+            return parseIfStatement();
+        case TokenType.While:
+            return parseWhileStatement();
         default:
             throw new TSError(`Unknown statement: ${token.type}`);
         }
+    };
+
+    const parseDefStatement = () => {
+        match(TokenType.Def);
+        const id = match(TokenType.Id);
+        match(TokenType.Assign);
+        const expr = parseExpression();
+        match(TokenType.Semi);
+        return new DefStatement(id.value, expr);
     };
 
     const parseLetStatement = () => {
@@ -257,7 +399,7 @@ const parse = tokens => {
         match(TokenType.Assign);
         const expr = parseExpression();
         match(TokenType.Semi);
-        return new LetStatment(id, expr);
+        return new LetStatement(id.value, expr);
     };
 
     const parsePrintStatement = () => {
@@ -267,8 +409,69 @@ const parse = tokens => {
         return new PrintStatement(expr);
     };
 
+    const parseBlockStatement = () => {
+        match(TokenType.LCurly);
+        let statements = [];
+        while (true) {
+            const type = peek().type;
+            if (type == TokenType.RCurly) {
+                forward();
+                break;
+            }
+
+            statements.push(parseStatement());
+        }
+
+        return new BlockStatement(statements);
+    };
+
+    const parseIfStatement = () => {
+        match(TokenType.If);
+        match(TokenType.LParen);
+        const condition = parseExpression();
+        match(TokenType.RParen);
+        const body = parseStatement();
+        let elseBody = null;
+        const type = peek().type;
+        if (type == TokenType.Else) {
+            forward();
+            elseBody = parseStatement();
+        }
+
+        return new IfStatement(condition, body, elseBody);
+    };
+
+    const parseWhileStatement = () => {
+        match(TokenType.While);
+        match(TokenType.LParen);
+        const condition = parseExpression();
+        match(TokenType.RParen);
+        const body = parseStatement();
+        return new WhileStatement(condition, body); 
+    };
+
     const parseExpression = () => {
-        return parseAdditiveExpression();
+        return parseRelationalExpression();
+    };
+
+    const parseRelationalExpression = () => {
+        let expr = parseAdditiveExpression();
+        while (true) {
+            const type = peek().type;
+            if (type == TokenType.EQ || type == TokenType.NE
+                || type == TokenType.GE || type == TokenType.LE
+                || type == TokenType.GT || type == TokenType.LT) {
+                forward();
+                const operator = operators[type];
+                const right = parseAdditiveExpression();
+                expr = new BinaryExpression(expr, operator, right);
+                continue;
+            }
+
+            break;
+        }
+
+        return expr;
     };
 
     const parseAdditiveExpression = () => {
@@ -316,6 +519,11 @@ const parse = tokens => {
             return new IntLiteral(value);
         }
 
+        if (type == TokenType.Id) {
+            forward();
+            return new NameExpression(token.value);
+        }
+
         if (type == TokenType.LParen) {
             forward();
             const expr = parseExpression();
@@ -329,15 +537,83 @@ const parse = tokens => {
     return parseProgram();
 };
 
+class Scope {
+    parent: Scope;
+    objects: { [key: string]: any };
+
+    static global(): Scope {
+        return new Scope(null);
+    }
+
+    create(): Scope {
+        return new Scope(this);
+    }
+
+    constructor(parent: Scope) {
+        this.parent = parent;
+        this.objects = {};
+    }
+
+    define(name: string, value: any) {
+        if (this.objects[name] != undefined) {
+            throw new TSError(`'${name}' already defined in current scope.`);
+        }
+
+        this.objects[name] = value;
+    }
+
+    set(name: string, value: any) {
+        const scope = this.lookupScope(name);
+        if (scope == null) {
+            throw new TSError(`'${name}' undefined.`);
+        }
+
+        scope.objects[name] = value;
+    }
+
+    get(name: string): any {
+        const scope = this.lookupScope(name);
+        if (scope == null) {
+            throw new TSError(`'${name}' undefined.`);
+        }
+
+        return scope.objects[name];
+    }
+
+    lookupScope(name: string): Scope {
+        let scope: Scope = this;
+        do {
+            if (scope.objects[name] != undefined) {
+                return scope;
+            }
+
+            scope = scope.parent;
+        } while (scope != null);
+        return null;
+    }
+}
+
 const execute = (program: Program) => {
-    const exec = (node: ASTNode) => {
+    const exec = (node: ASTNode, scope: Scope) => {
         switch (node.kind) {
             case NodeKind.Program: 
-                return executeProgram(node as Program);    
+                return executeProgram(node as Program, scope);
+            case NodeKind.BlockStatement:
+                return executeBlockStatement(node as BlockStatement, scope);
             case NodeKind.PrintStatement:
-                return executePrintStatement(node as PrintStatement);   
+                return executePrintStatement(node as PrintStatement, scope);
+            case NodeKind.DefStatement:
+                return executeDefStatement(node as DefStatement, scope);
+            case NodeKind.LetStatement:
+                return executeLetStatement(node as LetStatement, scope);
+            case NodeKind.IfStatement:
+                return executeIfStatement(node as IfStatement, scope);
+            case NodeKind.WhileStatement:
+                return executeWhileStatement(node as WhileStatement, scope);
             case NodeKind.BinaryExpression:
-                return executeBinaryExpression(node as BinaryExpression);   
+                return executeBinaryExpression(node as BinaryExpression, scope);
+            case NodeKind.NameExpression:
+                return executeNameExpression(node as NameExpression, scope);
             case NodeKind.IntLiteral:
                 return executeIntLiteral(node as IntLiteral);
             default:
@@ -345,18 +621,45 @@ const execute = (program: Program) => {
         }
     };
 
-    const executeProgram = (node: Program) => {
-        node.body.forEach(stmt => exec(stmt));
+    const executeProgram = (node: Program, scope: Scope) => {
+        node.body.forEach(stmt => exec(stmt, scope));
     };
 
-    const executePrintStatement = (node: PrintStatement) => {
-        const retVal = exec(node.value);
+    const executeBlockStatement = (node: BlockStatement, scope: Scope) => {
+        const blockScope = scope.create();
+        node.body.forEach(stmt => exec(stmt, blockScope));
+    };
+
+    const executePrintStatement = (node: PrintStatement, scope: Scope) => {
+        const retVal = exec(node.value, scope);
         console.log(retVal);
     };
 
-    const executeBinaryExpression = (node: BinaryExpression) => {
-        const left = exec(node.left);
-        const right = exec(node.right);
+    const executeDefStatement = (node: DefStatement, scope: Scope) => {
+        scope.define(node.id, exec(node.value, scope));
+    };
+
+    const executeLetStatement = (node: LetStatement, scope: Scope) => {
+        scope.set(node.id, exec(node.value, scope));
+    };
+
+    const executeIfStatement = (node: IfStatement, scope: Scope) => {
+        if (exec(node.condition, scope)) {
+            exec(node.body, scope);
+        } else if (node.elseBody != null) {
+            exec(node.elseBody, scope);
+        }
+    };
+
+    const executeWhileStatement = (node: WhileStatement, scope: Scope) => {
+        while (exec(node.condition, scope)) {
+            exec(node.body, scope);
+        }
+    };
+
+    const executeBinaryExpression = (node: BinaryExpression, scope: Scope) => {
+        const left = exec(node.left, scope);
+        const right = exec(node.right, scope);
         switch (node.operator) {
             case "+":
                 return left + right;
@@ -366,17 +669,38 @@ const execute = (program: Program) => {
                 return left * right;
             case "/":
                 return left / right;
+            case "==":
+                return left == right;
+            case "<>":
+                return left != right;
+            case ">=":
+                return left >= right;
+            case "<=":
+                return left <= right;
+            case ">":
+                return left > right;
+            case "<":
+                return left < right;
             default:
                 throw new Error();
         }
     };
 
+    const executeNameExpression = (node: NameExpression, scope: Scope) => scope.get(node.name);
+
     const executeIntLiteral = (node: IntLiteral) => node.value;
 
-    exec(program);
+    exec(program, Scope.global());
 };
 
-const code = `print 1 + 2 * (3 + 4);`
+const code = `
+def sum = 0;
+def i = 1;
+while (i <= 10) {
+    let sum = sum + i;
+    let i = i + 1;
+}
+print sum;`;
 console.log(`Code:\n${code}\n`);
 
 const tokens = tokenize(code);
