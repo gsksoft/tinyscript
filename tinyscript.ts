@@ -4,6 +4,15 @@ class TSError extends Error {
     }
 }
 
+class TSFuncRetError extends Error {
+    value: any;
+
+    constructor(value) {
+        super(null);
+        this.value = value;
+    }
+}
+
 enum TokenType {
     Id,
 
@@ -14,6 +23,7 @@ enum TokenType {
     Print,
     If, Else,
     While,
+    Fn, Return, Call,
 
     //literals
     IntLiteral,
@@ -62,7 +72,10 @@ const keywords = {
     "print": TokenType.Print,
     "if": TokenType.If,
     "else": TokenType.Else,
-    "while": TokenType.While
+    "while": TokenType.While,
+    "fn": TokenType.Fn,
+    "return": TokenType.Return,
+    "call": TokenType.Call
 };
 
 const tokenize = (input: string) => {
@@ -180,6 +193,9 @@ const tokenize = (input: string) => {
             if (char == '=') {
                 index++;
                 tokens.push(new Token(TokenType.EQ));
+            } else if (char == '>') {
+                index++;
+                tokens.push(new Token(TokenType.RightArrow));
             } else {
                 tokens.push(new Token(TokenType.Assign));
             }
@@ -200,9 +216,13 @@ enum NodeKind {
     BlockStatement,
     IfStatement,
     WhileStatement,
+    CallStatement,
+    ReturnStatement,
     BinaryExpression,
+    FuncCallExpression,
     NameExpression,
-    IntLiteral
+    IntLiteral,
+    FnLiteral
 }
 
 interface ASTNode {
@@ -293,6 +313,26 @@ class WhileStatement implements Statement {
     }
 }
 
+class CallStatement implements Statement {
+    kind: NodeKind.CallStatement;
+    expr: Expression;
+
+    constructor(expr: Expression) {
+        this.kind = NodeKind.CallStatement;
+        this.expr = expr;
+    }
+}
+
+class ReturnStatement implements Statement {
+    kind: NodeKind.ReturnStatement;
+    expr: Expression;
+
+    constructor(expr: Expression) {
+        this.kind = NodeKind.ReturnStatement;
+        this.expr = expr;
+    }
+}
+
 class BinaryExpression implements Expression {
     kind: NodeKind.BinaryExpression;
     left: Expression;
@@ -304,6 +344,18 @@ class BinaryExpression implements Expression {
         this.left = left;
         this.operator = operator;
         this.right = right;
+    }
+}
+
+class FuncCallExpression implements Expression {
+    kind: NodeKind.FuncCallExpression;
+    func: Expression;
+    args: Expression[];
+
+    constructor(func: Expression, args: Expression[]) {
+        this.kind = NodeKind.FuncCallExpression;
+        this.func = func;
+        this.args = args;
     }
 }
 
@@ -324,6 +376,18 @@ class IntLiteral implements Literal {
     constructor(value: number) {
         this.kind = NodeKind.IntLiteral;
         this.value = value;
+    }
+}
+
+class FnLiteral implements Literal {
+    kind: NodeKind.FnLiteral;
+    args: string[]
+    body: BlockStatement;
+
+    constructor(args: string[], body: BlockStatement) {
+        this.kind = NodeKind.FnLiteral;
+        this.args = args;
+        this.body = body;
     }
 }
 
@@ -379,6 +443,10 @@ const parse = tokens => {
             return parseIfStatement();
         case TokenType.While:
             return parseWhileStatement();
+        case TokenType.Call:
+            return parseCallStatement();
+        case TokenType.Return:
+            return parseReturnStatement();
         default:
             throw new TSError(`Unknown statement: ${token.type}`);
         }
@@ -450,6 +518,20 @@ const parse = tokens => {
         return new WhileStatement(condition, body); 
     };
 
+    const parseCallStatement = () => {
+        match(TokenType.Call);
+        const expr = parseExpression();
+        match(TokenType.Semi);
+        return new CallStatement(expr);
+    };
+
+    const parseReturnStatement = () => {
+        match(TokenType.Return);
+        const expr = parseExpression();
+        match(TokenType.Semi);
+        return new ReturnStatement(expr);
+    };
+
     const parseExpression = () => {
         return parseRelationalExpression();
     };
@@ -493,12 +575,12 @@ const parse = tokens => {
     };
 
     const parseMultiplicativeExpression = () => {
-        let expr = parsePrimaryExpression();
+        let expr = parsePostfixExpression();
         while (true) {
             const type = peek().type;
             if (type == TokenType.Mul || type == TokenType.Div) {
                 forward();
-                const right = parsePrimaryExpression();
+                const right = parsePostfixExpression();
                 const operator = operators[type];
                 expr = new BinaryExpression(expr, operator, right);
                 continue;
@@ -510,6 +592,32 @@ const parse = tokens => {
         return expr;
     };
 
+    const parsePostfixExpression = () => {
+        let expr = parsePrimaryExpression();
+        if (peek().type == TokenType.LParen) {
+            forward();
+            const args = parseArgumentList();
+            expr = new FuncCallExpression(expr, args);
+            match(TokenType.RParen);
+        }
+        return expr;
+    };
+
+    const parseArgumentList = () => {
+        let args = [];
+        if (peek().type == TokenType.RParen) {
+            return args;
+        }
+
+        args.push(parseExpression());
+        while (peek().type == TokenType.Comma) {
+            forward();
+            args.push(parseExpression());
+        }
+
+        return args;
+    };
+
     const parsePrimaryExpression = () => {
         const token = peek();
         const type = token.type;
@@ -517,6 +625,10 @@ const parse = tokens => {
             forward();
             const value = parseInt(token.value);
             return new IntLiteral(value);
+        }
+
+        if (type == TokenType.Fn) {
+            return parseFnLiteral();
         }
 
         if (type == TokenType.Id) {
@@ -532,6 +644,29 @@ const parse = tokens => {
         }
 
         throw new TSError(`Unknown token: ${type}`);
+    };
+
+    const parseFnLiteral = () => {
+        match(TokenType.Fn);
+        match(TokenType.LParen);
+        let args = [];
+        if (peek().type != TokenType.RParen) {
+            args.push(match(TokenType.Id).value);
+            while (true) {
+                if (peek().type == TokenType.Comma) {
+                    forward();
+                    args.push(match(TokenType.Id).value);
+                    continue;
+                }
+                
+                break;
+            }
+        }
+        
+        match(TokenType.RParen);
+        match(TokenType.RightArrow);
+        const body = parseBlockStatement();
+        return new FnLiteral(args, body);
     };
 
     return parseProgram();
@@ -610,12 +745,20 @@ const execute = (program: Program) => {
                 return executeIfStatement(node as IfStatement, scope);
             case NodeKind.WhileStatement:
                 return executeWhileStatement(node as WhileStatement, scope);
+            case NodeKind.CallStatement:
+                return executeCallStatement(node as CallStatement, scope);
+            case NodeKind.ReturnStatement:
+                return executeReturnStatement(node as ReturnStatement, scope);
             case NodeKind.BinaryExpression:
                 return executeBinaryExpression(node as BinaryExpression, scope);
+            case NodeKind.FuncCallExpression:
+                return executeFuncCallExpression(node as FuncCallExpression, scope);
             case NodeKind.NameExpression:
                 return executeNameExpression(node as NameExpression, scope);
             case NodeKind.IntLiteral:
                 return executeIntLiteral(node as IntLiteral);
+            case NodeKind.FnLiteral:
+                return executeFnLiteral(node as FnLiteral);
             default:
                 throw new TSError(`Unknown kind: ${node.kind}`);
         }
@@ -657,6 +800,15 @@ const execute = (program: Program) => {
         }
     };
 
+    const executeCallStatement = (node: CallStatement, scope: Scope) => {
+        exec(node.expr, scope);
+    };
+
+    const executeReturnStatement = (node: ReturnStatement, scope: Scope) => {
+        const retVal = exec(node.expr, scope);
+        throw new TSFuncRetError(retVal);
+    };
+
     const executeBinaryExpression = (node: BinaryExpression, scope: Scope) => {
         const left = exec(node.left, scope);
         const right = exec(node.right, scope);
@@ -686,9 +838,32 @@ const execute = (program: Program) => {
         }
     };
 
+    const executeFuncCallExpression = (node: FuncCallExpression, scope: Scope) => {
+        const func = exec(node.func, scope) as FnLiteral;
+        const args = func.args;
+        const argVals = node.args.map(arg => exec(arg, scope));
+        const funcScope = scope.create();
+        for (let i = 0; i < args.length; i++) {
+            funcScope.define(args[i], argVals[i]);
+        }
+
+        try {
+            exec(func.body, funcScope);
+        } catch (err) {
+            // TSFuncRetError
+            if (err.value != undefined) {
+                return err.value;
+            }
+
+            throw err;
+        }
+    };
+
     const executeNameExpression = (node: NameExpression, scope: Scope) => scope.get(node.name);
 
     const executeIntLiteral = (node: IntLiteral) => node.value;
+
+    const executeFnLiteral = (node: FnLiteral) => node;
 
     exec(program, Scope.global());
 };
@@ -700,7 +875,17 @@ while (i <= 10) {
     let sum = sum + i;
     let i = i + 1;
 }
-print sum;`;
+print sum;
+
+def p = fn (n) => { print n; };
+def fib = fn (n) => { 
+    if (n < 2)
+        return n;
+    
+    return fib(n - 1) + fib(n - 2);   
+};
+call p(fib(15));
+`;
 console.log(`Code:\n${code}\n`);
 
 const tokens = tokenize(code);
